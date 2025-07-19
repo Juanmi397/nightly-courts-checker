@@ -37,7 +37,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   run().then(r => {
     r.forEach(x => {
       const tot = x.free + x.busy;
-      console.log(`${x.site}: ${x.free} free / ${tot} slots`);
+      - console.log(`${x.site}: ${x.free} free / ${tot} slots`);
++ const pct = ((tot - x.free) / tot * 100).toFixed(1);
++ console.log(`${x.site}: ${x.free} free / ${tot}  →  ${pct}% occupied`);
     });
   });
 }
