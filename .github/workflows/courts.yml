@@ -1,0 +1,66 @@
+name: Padel‑court occupancy
+
+on:
+  schedule:
+    # Summer (Irish time = UTC+1)
+    - cron: '50 19 * * 6,0'   # 20:50 Sat/Sun Irish Summer Time
+    - cron: '50 20 * * 1-5'   # 21:50 Mon–Fri Irish Summer Time
+    # Winter (Irish time = UTC)
+    - cron: '50 20 * * 6,0'   # 20:50 Sat/Sun Irish Standard Time
+    - cron: '50 21 * * 1-5'   # 21:50 Mon–Fri Irish Standard Time
+  workflow_dispatch:          # adds a “Run workflow” button
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+
+      - run: npm install playwright
+      - run: npx playwright install --with-deps
+
+      - name: Run scraper
+        id: scan
+        run: node check.js | tee result.txt
+
+      # ─── Pick ONE notification method ───
+      #  A) Slack   – uncomment this block and add a repo secret SLACK_URL
+      #- name: Slack alert
+      #  env:
+      #    SLACK_URL: ${{ secrets.SLACK_URL }}
+      #  run: |
+      #    curl -X POST -H 'Content-Type: application/json' \
+      #    --data "{\"text\":\"$(cat result.txt)\"}" "$SLACK_URL"
+
+      #  B) Email   – leave this block and add four SMTP secrets
+      - name: Install msmtp
+        run: sudo apt-get update -y && sudo apt-get install -y msmtp mailutils
+      - name: Email summary
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          TO_EMAIL:  ${{ secrets.TO_EMAIL }}
+        run: |
+          cat > ~/.msmtprc <<EOF
+          defaults
+          auth           on
+          tls            on
+          tls_trust_file /etc/ssl/certs/ca-certificates.crt
+          logfile        ~/.msmtp.log
+
+          account default
+          host $SMTP_HOST
+          port 587
+          from $SMTP_USER
+          user $SMTP_USER
+          password $SMTP_PASS
+          EOF
+          chmod 600 ~/.msmtprc
+          subject="Padel occupancy $(date +%F)"
+          mail -s "$subject" "$TO_EMAIL" < result.txt
