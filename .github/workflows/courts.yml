@@ -89,13 +89,19 @@ jobs:
           mkdir -p data
           FILE=data/occupancy.csv
           if [ ! -f "$FILE" ]; then
-            echo "date,padellk_free,padellk_busy,projectpadel_free,projectpadel_busy" > "$FILE"
+            echo "date,padellk_free,padellk_busy,padellk_pct,projectpadel_free,projectpadel_busy,projectpadel_pct" > "$FILE"
           fi
-          printf "%s,%s,%s,%s,%s\n" "$(date +%F)" \
-            "${{ steps.nums.outputs.padlk_free }}" \
-            "${{ steps.nums.outputs.padlk_busy }}" \
-            "${{ steps.nums.outputs.proj_free }}" \
-            "${{ steps.nums.outputs.proj_busy }}" >> "$FILE"
+          padlk_total=$(( ${{ steps.nums.outputs.padlk_free }} + ${{ steps.nums.outputs.padlk_busy }} ))
+          proj_total=$(( ${{ steps.nums.outputs.proj_free }} + ${{ steps.nums.outputs.proj_busy }} ))
+          padlk_pct=$(awk "BEGIN {printf \"%.1f\", (${padlk_total}-${{ steps.nums.outputs.padlk_free }})/${padlk_total}*100}")
+          proj_pct=$(awk "BEGIN {printf \"%.1f\", (${proj_total}-${{ steps.nums.outputs.proj_free }})/${proj_total}*100}")
+          printf "%s,%s,%s,%s,%s,%s,%s\n" "$(date +%F)" \
+          "${{ steps.nums.outputs.padlk_free }}" \
+          "${{ steps.nums.outputs.padlk_busy }}" \
+          "$padlk_pct" \
+          "${{ steps.nums.outputs.proj_free }}" \
+          "${{ steps.nums.outputs.proj_busy }}" \
+          "$proj_pct" >> "$FILE"
 
       - name: Commit updated CSV
         run: |
