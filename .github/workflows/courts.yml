@@ -23,24 +23,36 @@ jobs:
 
       - run: npm install playwright
       - run: npx playwright install --with-deps
-
       - name: Run scraper
-        id: scan
+        id: scrape
         run: node check.js | tee result.txt
 
-      # ─── Pick ONE notification method ───
-      #  A) Slack   – uncomment this block and add a repo secret SLACK_URL
-      #- name: Slack alert
-      #  env:
-      #    SLACK_URL: ${{ secrets.SLACK_URL }}
-      #  run: |
-      #    curl -X POST -H 'Content-Type: application/json' \
-      #    --data "{\"text\":\"$(cat result.txt)\"}" "$SLACK_URL"
+      # ──────────────────────────────────────────
+      # 1)  PARSE the numbers once so every later
+      #     step can reuse them
+      # ──────────────────────────────────────────
+      - name: Parse counts for later use
+        id: nums
+        run: |
+          PADLK_FREE=$(grep -oP 'Padel LK: \K[0-9]+' result.txt)
+          PADLK_TOTAL=$(grep -oP 'Padel LK: [0-9]+ free / \K[0-9]+' result.txt)
+          PROJ_FREE=$(grep -oP 'Project Padel: \K[0-9]+' result.txt)
+          PROJ_TOTAL=$(grep -oP 'Project Padel: [0-9]+ free / \K[0-9]+' result.txt)
 
-      #  B) Email   – leave this block and add four SMTP secrets
+          echo "padlk_free=$PADLK_FREE"          >> $GITHUB_OUTPUT
+          echo "padlk_busy=$((PADLK_TOTAL-PADLK_FREE))" >> $GITHUB_OUTPUT
+          echo "proj_free=$PROJ_FREE"            >> $GITHUB_OUTPUT
+          echo "proj_busy=$((PROJ_TOTAL-PROJ_FREE))"   >> $GITHUB_OUTPUT
+
+      # ──────────────────────────────────────────
+      # 2)  IMMEDIATE NOTIFICATION (e‑mail)
+      #     ─ uses four SMTP_* secrets you already
+      #       created earlier
+      # ──────────────────────────────────────────
       - name: Install msmtp
         run: sudo apt-get update -y && sudo apt-get install -y msmtp mailutils
-      - name: Email summary
+
+      - name: Send nightly e‑mail
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
@@ -62,5 +74,33 @@ jobs:
           password $SMTP_PASS
           EOF
           chmod 600 ~/.msmtprc
-          subject="Padel occupancy $(date +%F)"
-          mail -s "$subject" "$TO_EMAIL" < result.txt
+
+          SUBJECT="Padel occupancy $(date +%F)"
+          body=$(cat result.txt)
+          echo "$body" | mail -s "$SUBJECT" "$TO_EMAIL"
+
+      # ──────────────────────────────────────────
+      # 3)  LONG‑TERM CSV ARCHIVE
+      #     ─ appends one line per run to
+      #       data/occupancy.csv and commits it
+      # ──────────────────────────────────────────
+      - name: Append to CSV log
+        run: |
+          mkdir -p data
+          FILE=data/occupancy.csv
+          if [ ! -f "$FILE" ]; then
+            echo "date,padellk_free,padellk_busy,projectpadel_free,projectpadel_busy" > "$FILE"
+          fi
+          printf "%s,%s,%s,%s,%s\n" "$(date +%F)" \
+            "${{ steps.nums.outputs.padlk_free }}" \
+            "${{ steps.nums.outputs.padlk_busy }}" \
+            "${{ steps.nums.outputs.proj_free }}" \
+            "${{ steps.nums.outputs.proj_busy }}" >> "$FILE"
+
+      - name: Commit updated CSV
+        run: |
+          git config --global user.name  "court‑bot"
+          git config --global user.email "actions@github.com"
+          git add data/occupancy.csv
+          git commit -m "Log for $(date +%F)" || echo "Nothing new to commit"
+          git push
