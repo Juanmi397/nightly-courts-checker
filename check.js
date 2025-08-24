@@ -26,8 +26,14 @@ async function run() {
   for (const site of SITES) {
     const page = await browser.newPage();
     await page.goto(site.url, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(WAIT_MS);
-    await page.waitForSelector(SEL.TABLE, { timeout: 5000 });
+    try {
+      await page.waitForSelector(SEL.TABLE, { timeout: 30000 });
+    } catch (err) {
+      console.error("Grid table not found, saving screenshot…");
+      await page.screenshot({ path: `debug-${site.key}.png`, fullPage: true });
+      throw err;
+    }
+
 
     const free = await page.$$eval(SEL.FREE, els => els.length);
     const busy = await page.$$eval(SEL.BUSY, els => els.length);
