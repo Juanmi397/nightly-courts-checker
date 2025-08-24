@@ -1,45 +1,63 @@
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
+/**
+ * Pages to check
+ */
 const SITES = [
-  { name: 'Padel LK',      url: 'https://www.padellk.ie/Booking/Grid.aspx' },
-  { name: 'Project Padel', url: 'https://projectpadel.ie/Booking/Grid.aspx' },
+  { key: "PadelLK",       url: "https://www.padellk.ie/Booking/Grid.aspx" },
+  { key: "ProjectPadel",  url: "https://projectpadel.ie/Booking/Grid.aspx" },
 ];
 
-// MatchPoint paints the grid after ±15 s of JavaScript.
-const WAIT = 16000;
-const SEL  = {
-  TABLE: '.gridTable',
-  FREE : '.gridTable .free',   // green cells
-  BUSY : '.gridTable .busy',   // red  cells
+/**
+ * MatchPoint draws the grid with JS after ~15–20s.
+ * We wait a bit, then count cells by CSS class.
+ * If your venue changes class names, tweak FREE/BUSY below.
+ */
+const WAIT_MS = 16000;
+const SEL = {
+  TABLE: ".gridTable",
+  FREE:  ".gridTable .free", // green cells
+  BUSY:  ".gridTable .busy", // red cells
 };
 
-export async function run() {
+async function run() {
   const browser = await chromium.launch();
   const out = [];
-
   for (const site of SITES) {
     const page = await browser.newPage();
-    await page.goto(site.url, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(WAIT);
+    await page.goto(site.url, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(WAIT_MS);
     await page.waitForSelector(SEL.TABLE, { timeout: 5000 });
 
-    const free = await page.$$eval(SEL.FREE, n => n.length);
-    const busy = await page.$$eval(SEL.BUSY, n => n.length);
-    out.push({ site: site.name, free, busy });
+    const free = await page.$$eval(SEL.FREE, els => els.length);
+    const busy = await page.$$eval(SEL.BUSY, els => els.length);
+    const total = free + busy;
+    const pct = total > 0 ? (((busy) / total) * 100).toFixed(1) : "0.0";
+
+    out.push({ key: site.key, free, busy, total, pct });
+
     await page.close();
   }
   await browser.close();
   return out;
 }
 
-// When the workflow runs `node check.js`:
+// When run from the command line (GitHub Action), print 2 clean lines
+// Example:
+// PadelLK free=2 busy=26 total=28 pct=92.9
+// ProjectPadel free=1 busy=23 total=24 pct=95.8
 if (import.meta.url === `file://${process.argv[1]}`) {
-  run().then(r => {
-    r.forEach(x => {
-      const tot = x.free + x.busy;
-      - console.log(`${x.site}: ${x.free} free / ${tot} slots`);
-+ const pct = ((tot - x.free) / tot * 100).toFixed(1);
-+ console.log(`${x.site}: ${x.free} free / ${tot}  →  ${pct}% occupied`);
+  run()
+    .then(results => {
+      for (const r of results) {
+        console.log(`${r.key} free=${r.free} busy=${r.busy} total=${r.total} pct=${r.pct}`);
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      process.exit(1);
     });
-  });
 }
+
+// (If you ever need to import this file from another JS file)
+export { run };
