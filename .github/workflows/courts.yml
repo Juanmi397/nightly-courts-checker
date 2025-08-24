@@ -1,14 +1,14 @@
-name: Padel‑court occupancy
+name: Padel-court occupancy
 
 on:
   schedule:
-    # Summer (Irish time = UTC+1)
+    # Summer (Irish time = UTC+1)
     - cron: '50 19 * * 6,0'   # 20:50 Sat/Sun Irish Summer Time
     - cron: '50 20 * * 1-5'   # 21:50 Mon–Fri Irish Summer Time
-    # Winter (Irish time = UTC)
+    # Winter (Irish time = UTC)
     - cron: '50 20 * * 6,0'   # 20:50 Sat/Sun Irish Standard Time
     - cron: '50 21 * * 1-5'   # 21:50 Mon–Fri Irish Standard Time
-  workflow_dispatch:          # adds a “Run workflow” button
+  workflow_dispatch:          # manual “Run workflow” button
 
 jobs:
   scrape:
@@ -21,38 +21,49 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
 
+      # Install Playwright + its browser dependencies
       - run: npm install playwright
       - run: npx playwright install --with-deps
+
+      # Run the scraper and save a human-readable summary (for email body)
       - name: Run scraper
-        id: scrape
         run: node check.js | tee result.txt
 
-      # ──────────────────────────────────────────
-      # 1)  PARSE the numbers once so every later
-      #     step can reuse them
-      # ──────────────────────────────────────────
-      - name: Parse counts for later use
+      # ---------- PARSE the numbers once for later steps ----------
+      - name: Parse counts
         id: nums
         run: |
-          PADLK_FREE=$(grep -oP 'Padel LK: \K[0-9]+' result.txt)
-          PADLK_TOTAL=$(grep -oP 'Padel LK: [0-9]+ free / \K[0-9]+' result.txt)
-          PROJ_FREE=$(grep -oP 'Project Padel: \K[0-9]+' result.txt)
-          PROJ_TOTAL=$(grep -oP 'Project Padel: [0-9]+ free / \K[0-9]+' result.txt)
+          line1=$(grep '^PadelLK ' result.txt)
+          line2=$(grep '^ProjectPadel ' result.txt)
 
-          echo "padlk_free=$PADLK_FREE"          >> $GITHUB_OUTPUT
-          echo "padlk_busy=$((PADLK_TOTAL-PADLK_FREE))" >> $GITHUB_OUTPUT
-          echo "proj_free=$PROJ_FREE"            >> $GITHUB_OUTPUT
-          echo "proj_busy=$((PROJ_TOTAL-PROJ_FREE))"   >> $GITHUB_OUTPUT
+          get_num () { echo "$1" | grep -oE "$2=[0-9]+(\.[0-9]+)?" | cut -d= -f2; }
 
-      # ──────────────────────────────────────────
-      # 2)  IMMEDIATE NOTIFICATION (e‑mail)
-      #     ─ uses four SMTP_* secrets you already
-      #       created earlier
-      # ──────────────────────────────────────────
-      - name: Install msmtp
+          pkl_free=$(get_num "$line1" free)
+          pkl_busy=$(get_num "$line1" busy)
+          pkl_total=$(get_num "$line1" total)
+          pkl_pct=$(get_num "$line1" pct)
+
+          prj_free=$(get_num "$line2" free)
+          prj_busy=$(get_num "$line2" busy)
+          prj_total=$(get_num "$line2" total)
+          prj_pct=$(get_num "$line2" pct)
+
+          {
+            echo "pkl_free=$pkl_free"
+            echo "pkl_busy=$pkl_busy"
+            echo "pkl_total=$pkl_total"
+            echo "pkl_pct=$pkl_pct"
+            echo "prj_free=$prj_free"
+            echo "prj_busy=$prj_busy"
+            echo "prj_total=$prj_total"
+            echo "prj_pct=$prj_pct"
+          } >> "$GITHUB_OUTPUT"
+
+      # ---------- EMAIL: immediate nightly message ----------
+      - name: Install msmtp (lightweight SMTP sender)
         run: sudo apt-get update -y && sudo apt-get install -y msmtp mailutils
 
-      - name: Send nightly e‑mail
+      - name: Send nightly email
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
@@ -64,7 +75,6 @@ jobs:
           auth           on
           tls            on
           tls_trust_file /etc/ssl/certs/ca-certificates.crt
-          logfile        ~/.msmtp.log
 
           account default
           host $SMTP_HOST
@@ -76,37 +86,16 @@ jobs:
           chmod 600 ~/.msmtprc
 
           SUBJECT="Padel occupancy $(date +%F)"
-          body=$(cat result.txt)
-          echo "$body" | mail -s "$SUBJECT" "$TO_EMAIL"
+          cat > email_body.txt <<TXT
+          PadelLK       free=${{ steps.nums.outputs.pkl_free }}  busy=${{ steps.nums.outputs.pkl_busy }}  total=${{ steps.nums.outputs.pkl_total }}  pct=${{ steps.nums.outputs.pkl_pct }}
+          ProjectPadel  free=${{ steps.nums.outputs.prj_free }}  busy=${{ steps.nums.outputs.prj_busy }}  total=${{ steps.nums.outputs.prj_total }}  pct=${{ steps.nums.outputs.prj_pct }}
+          TXT
+          mail -s "$SUBJECT" "$TO_EMAIL" < email_body.txt
 
-      # ──────────────────────────────────────────
-      # 3)  LONG‑TERM CSV ARCHIVE
-      #     ─ appends one line per run to
-      #       data/occupancy.csv and commits it
-      # ──────────────────────────────────────────
+      # ---------- CSV ARCHIVE: append one row and commit ----------
       - name: Append to CSV log
         run: |
           mkdir -p data
           FILE=data/occupancy.csv
           if [ ! -f "$FILE" ]; then
             echo "date,padellk_free,padellk_busy,padellk_pct,projectpadel_free,projectpadel_busy,projectpadel_pct" > "$FILE"
-          fi
-          padlk_total=$(( ${{ steps.nums.outputs.padlk_free }} + ${{ steps.nums.outputs.padlk_busy }} ))
-          proj_total=$(( ${{ steps.nums.outputs.proj_free }} + ${{ steps.nums.outputs.proj_busy }} ))
-          padlk_pct=$(awk "BEGIN {printf \"%.1f\", (${padlk_total}-${{ steps.nums.outputs.padlk_free }})/${padlk_total}*100}")
-          proj_pct=$(awk "BEGIN {printf \"%.1f\", (${proj_total}-${{ steps.nums.outputs.proj_free }})/${proj_total}*100}")
-          printf "%s,%s,%s,%s,%s,%s,%s\n" "$(date +%F)" \
-          "${{ steps.nums.outputs.padlk_free }}" \
-          "${{ steps.nums.outputs.padlk_busy }}" \
-          "$padlk_pct" \
-          "${{ steps.nums.outputs.proj_free }}" \
-          "${{ steps.nums.outputs.proj_busy }}" \
-          "$proj_pct" >> "$FILE"
-
-      - name: Commit updated CSV
-        run: |
-          git config --global user.name  "court‑bot"
-          git config --global user.email "actions@github.com"
-          git add data/occupancy.csv
-          git commit -m "Log for $(date +%F)" || echo "Nothing new to commit"
-          git push
