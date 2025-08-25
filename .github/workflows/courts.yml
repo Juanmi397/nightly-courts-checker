@@ -107,4 +107,30 @@ jobs:
             echo "Subject: Padel occupancy $(date +%F)"
             echo "Content-Type: text/plain; charset=UTF-8"
             echo
-            echo "PadelLK
+            echo "PadelLK       free=${{ steps.nums.outputs.pkl_free }}  busy=${{ steps.nums.outputs.pkl_busy }}  total=${{ steps.nums.outputs.pkl_total }}  pct=${{ steps.nums.outputs.pkl_pct }}"
+            echo "ProjectPadel  free=${{ steps.nums.outputs.prj_free }}  busy=${{ steps.nums.outputs.prj_busy }}  total=${{ steps.nums.outputs.prj_total }}  pct=${{ steps.nums.outputs.prj_pct }}"
+          } | msmtp -a default -t
+
+      # ---------- CSV ARCHIVE ----------
+      - name: Append to CSV log
+        run: |
+          mkdir -p data
+          FILE=data/occupancy.csv
+          if [ ! -f "$FILE" ]; then
+            echo "date,padellk_free,padellk_busy,padellk_pct,projectpadel_free,projectpadel_busy,projectpadel_pct" > "$FILE"
+          fi
+          printf "%s,%s,%s,%s,%s,%s,%s\n" "$(date +%F)" \
+            "${{ steps.nums.outputs.pkl_free }}" \
+            "${{ steps.nums.outputs.pkl_busy }}" \
+            "${{ steps.nums.outputs.pkl_pct }}" \
+            "${{ steps.nums.outputs.prj_free }}" \
+            "${{ steps.nums.outputs.prj_busy }}" \
+            "${{ steps.nums.outputs.prj_pct }}" >> "$FILE"
+
+      - name: Commit updated CSV
+        run: |
+          git config --global user.name  "court-bot"
+          git config --global user.email "actions@github.com"
+          git add data/occupancy.csv
+          git commit -m "Log for $(date +%F)" || echo "Nothing to commit"
+          git push
