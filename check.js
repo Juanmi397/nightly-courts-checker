@@ -6,12 +6,24 @@ const SITES = [
   { key: "ProjectPadel", url: "https://projectpadel.ie/Booking/Grid.aspx" }
 ];
 
-// Selectors adapted for SVG-based booking grid
 const SEL = {
-  GRID: "svg#tablaReserva",                     // the whole SVG
-  FREE: "rect.buttonHora[habilitado='true']",   // free slots
-  BUSY: "rect.evento"                           // booked slots
+  GRID: "svg#tablaReserva",
+  FREE: "rect.buttonHora[habilitado='true']",
+  BUSY: "rect.evento"
 };
+
+function isPeak(siteKey, hour, day) {
+  const isWeekend = (day === 0 || day === 6);
+  if (siteKey === "PadelLK") {
+    if (isWeekend) return true;
+    return (hour >= 16 && hour <= 22);
+  }
+  if (siteKey === "ProjectPadel") {
+    if (isWeekend) return (hour >= 10 && hour <= 22);
+    return (hour >= 16 && hour <= 22);
+  }
+  return false;
+}
 
 export async function run() {
   const browser = await chromium.launch({ headless: true });
@@ -21,32 +33,53 @@ export async function run() {
     const page = await browser.newPage();
     await page.goto(site.url, { waitUntil: "domcontentloaded" });
 
-    try {
-      // Wait until the SVG grid appears
-      await page.waitForSelector(SEL.GRID, { timeout: 30000 });
-    } catch (err) {
-      console.error(`Grid not found on ${site.key}, saving screenshot…`);
-      await page.screenshot({ path: `debug-${site.key}.png`, fullPage: true });
-      throw err;
+    await page.waitForSelector(SEL.GRID, { timeout: 30000 });
+
+    await page.screenshot({ path: `snapshot-${site.key}.png`, fullPage: true });
+
+    const slots = await page.$$eval("rect.buttonHora, rect.evento", els =>
+      els.map(el => ({
+        busy: el.classList.contains("evento"),
+        time: el.getAttribute("time") || el.getAttribute("datahora") || ""
+      }))
+    );
+
+    const now = new Date();
+    let free = 0, busy = 0, peakFree = 0, peakBusy = 0, offFree = 0, offBusy = 0;
+    for (const slot of slots) {
+      if (!slot.time) continue;
+      const [h] = slot.time.split(":").map(Number);
+      const inPeak = (h >= 0 && h <= 23) ? isPeak(site.key, h, now.getDay()) : false;
+      if (slot.busy) {
+        busy++;
+        inPeak ? peakBusy++ : offBusy++;
+      } else {
+        free++;
+        inPeak ? peakFree++ : offFree++;
+      }
     }
 
-    // Count free and busy rectangles
-    const free = await page.$$eval(SEL.FREE, els => els.length);
-    const busy = await page.$$eval(SEL.BUSY, els => els.length);
     const total = free + busy;
-    const pct = total > 0 ? (((busy) / total) * 100).toFixed(1) : "0.0";
+    const pct = total > 0 ? ((busy / total) * 100).toFixed(1) : "0.0";
+    const peakTotal = peakFree + peakBusy;
+    const offTotal = offFree + offBusy;
+    const pctPeak = peakTotal > 0 ? ((peakBusy / peakTotal) * 100).toFixed(1) : "0.0";
+    const pctOff = offTotal > 0 ? ((offBusy / offTotal) * 100).toFixed(1) : "0.0";
 
-    out.push(`${site.key}: ${busy} busy / ${total} slots → ${pct}% occupied`);
+    // print as key=value line
+    out.push(
+      `${site.key} free=${free} busy=${busy} total=${total} pct=${pct} ` +
+      `peak_busy=${peakBusy} peak_total=${peakTotal} peak_pct=${pctPeak} ` +
+      `off_busy=${offBusy} off_total=${offTotal} off_pct=${pctOff}`
+    );
+
     await page.close();
   }
 
   await browser.close();
-
-  // Print results so GitHub Actions can capture them
   console.log(out.join("\n"));
 }
 
-// Run directly if this file is executed via `node check.js`
 if (import.meta.url === `file://${process.argv[1]}`) {
   run();
 }
