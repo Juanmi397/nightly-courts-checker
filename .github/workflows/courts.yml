@@ -1,37 +1,33 @@
-name: Padel-court occupancy
+name: Nightly Court Check
 
 on:
   schedule:
-    # Summer (Irish time = UTC+1)
-    - cron: '50 19 * * 6,0'   # 20:50 Sat/Sun Irish Summer Time
-    - cron: '50 20 * * 1-5'   # 21:50 Mon–Fri Irish Summer Time
-    # Winter (Irish time = UTC)
-    - cron: '50 20 * * 6,0'   # 20:50 Sat/Sun Irish Standard Time
-    - cron: '50 21 * * 1-5'   # 21:50 Mon–Fri Irish Standard Time
-  workflow_dispatch:          # manual “Run workflow” button
+    # 20:50 on Sat & Sun, 21:50 Mon-Fri
+    - cron: "50 20 * * 6,0"
+    - cron: "50 21 * * 1-5"
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-      # Install Playwright + its browser dependencies
-      - run: npm install playwright
-      - run: npx playwright install --with-deps
+      # ✅ Official Playwright GitHub Action (no npm 429 errors)
+      - name: Install Playwright
+        uses: microsoft/playwright-github-action@v1
 
-      # Run the scraper and save a human-readable summary (for email body)
       - name: Run scraper
         run: node check.js | tee result.txt
 
-      # ---------- PARSE the numbers once for later steps ----------
       - name: Parse counts
-        id: nums
+        id: parse
         run: |
           line1=$(grep '^PadelLK ' result.txt)
           line2=$(grep '^ProjectPadel ' result.txt)
@@ -42,60 +38,79 @@ jobs:
           pkl_busy=$(get_num "$line1" busy)
           pkl_total=$(get_num "$line1" total)
           pkl_pct=$(get_num "$line1" pct)
+          pkl_peak_busy=$(get_num "$line1" peak_busy)
+          pkl_peak_total=$(get_num "$line1" peak_total)
+          pkl_peak_pct=$(get_num "$line1" peak_pct)
+          pkl_off_busy=$(get_num "$line1" off_busy)
+          pkl_off_total=$(get_num "$line1" off_total)
+          pkl_off_pct=$(get_num "$line1" off_pct)
 
           prj_free=$(get_num "$line2" free)
           prj_busy=$(get_num "$line2" busy)
           prj_total=$(get_num "$line2" total)
           prj_pct=$(get_num "$line2" pct)
+          prj_peak_busy=$(get_num "$line2" peak_busy)
+          prj_peak_total=$(get_num "$line2" peak_total)
+          prj_peak_pct=$(get_num "$line2" peak_pct)
+          prj_off_busy=$(get_num "$line2" off_busy)
+          prj_off_total=$(get_num "$line2" off_total)
+          prj_off_pct=$(get_num "$line2" off_pct)
 
           {
             echo "pkl_free=$pkl_free"
             echo "pkl_busy=$pkl_busy"
             echo "pkl_total=$pkl_total"
             echo "pkl_pct=$pkl_pct"
+            echo "pkl_peak_busy=$pkl_peak_busy"
+            echo "pkl_peak_total=$pkl_peak_total"
+            echo "pkl_peak_pct=$pkl_peak_pct"
+            echo "pkl_off_busy=$pkl_off_busy"
+            echo "pkl_off_total=$pkl_off_total"
+            echo "pkl_off_pct=$pkl_off_pct"
+
             echo "prj_free=$prj_free"
             echo "prj_busy=$prj_busy"
             echo "prj_total=$prj_total"
             echo "prj_pct=$prj_pct"
+            echo "prj_peak_busy=$prj_peak_busy"
+            echo "prj_peak_total=$prj_peak_total"
+            echo "prj_peak_pct=$prj_peak_pct"
+            echo "prj_off_busy=$prj_off_busy"
+            echo "prj_off_total=$prj_off_total"
+            echo "prj_off_pct=$prj_off_pct"
           } >> "$GITHUB_OUTPUT"
 
-      # ---------- EMAIL: immediate nightly message ----------
-      - name: Install msmtp (lightweight SMTP sender)
-        run: sudo apt-get update -y && sudo apt-get install -y msmtp mailutils
+          # Append results to CSV
+          d=$(date '+%Y-%m-%d %H:%M')
+          echo "$d,$line1,$line2" >> results.csv
 
-      - name: Send nightly email
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          TO_EMAIL:  ${{ secrets.TO_EMAIL }}
-        run: |
-          cat > ~/.msmtprc <<EOF
-          defaults
-          auth           on
-          tls            on
-          tls_trust_file /etc/ssl/certs/ca-certificates.crt
+      - name: Commit results.csv
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: results.csv
+          message: "Update results"
 
-          account default
-          host $SMTP_HOST
-          port 587
-          from $SMTP_USER
-          user $SMTP_USER
-          password $SMTP_PASS
-          EOF
-          chmod 600 ~/.msmtprc
+      - name: Send email
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.GMAIL_USER }}
+          password: ${{ secrets.GMAIL_PASS }}
+          subject: "Padel Courts Occupancy Report"
+          to: youremail@example.com
+          from: Github Bot <bot@example.com>
+          body: |
+            ${{ env.line1 }}
+            ${{ env.line2 }}
 
-          SUBJECT="Padel occupancy $(date +%F)"
-          cat > email_body.txt <<TXT
-          PadelLK       free=${{ steps.nums.outputs.pkl_free }}  busy=${{ steps.nums.outputs.pkl_busy }}  total=${{ steps.nums.outputs.pkl_total }}  pct=${{ steps.nums.outputs.pkl_pct }}
-          ProjectPadel  free=${{ steps.nums.outputs.prj_free }}  busy=${{ steps.nums.outputs.prj_busy }}  total=${{ steps.nums.outputs.prj_total }}  pct=${{ steps.nums.outputs.prj_pct }}
-          TXT
-          mail -s "$SUBJECT" "$TO_EMAIL" < email_body.txt
-
-      # ---------- CSV ARCHIVE: append one row and commit ----------
-      - name: Append to CSV log
-        run: |
-          mkdir -p data
-          FILE=data/occupancy.csv
-          if [ ! -f "$FILE" ]; then
-            echo "date,padellk_free,padellk_busy,padellk_pct,projectpadel_free,projectpadel_busy,projectpadel_pct" > "$FILE"
+      # ✅ Always upload screenshots from check.js
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: |
+            snapshot-*.png
+            debug-*.png
