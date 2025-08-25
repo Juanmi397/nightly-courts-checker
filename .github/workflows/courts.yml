@@ -24,15 +24,15 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
 
-      # Install Playwright and browser (no --with-deps; not needed on ubuntu-latest)
+      # Install Playwright and Chromium (no --with-deps, no --quiet)
       - run: npm install playwright@latest
-      - run: npx playwright install chromium --quiet
+      - run: npx playwright install chromium
 
-      # Run the scraper (always produces two lines)
+      # Run the scraper (always prints two lines)
       - name: Run scraper
         run: node check.js | tee result.txt
 
-      # Upload any debug screenshots (if scraper had to take them)
+      # Upload any debug screenshots if we took them
       - name: Upload debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -41,7 +41,7 @@ jobs:
           path: debug-*.png
           if-no-files-found: ignore
 
-      # ---------- PARSE the numbers once ----------
+      # Parse counts for email + CSV
       - name: Parse counts
         id: nums
         shell: bash
@@ -49,19 +49,15 @@ jobs:
           set -e
           line1="$(grep '^PadelLK ' result.txt || true)"
           line2="$(grep '^ProjectPadel ' result.txt || true)"
-
           get_num () { echo "$1" | grep -oE "$2=[0-9]+(\.[0-9]+)?" | cut -d= -f2; }
-
           pkl_free="$(get_num "$line1" free)";   [ -n "$pkl_free"  ] || pkl_free=0
           pkl_busy="$(get_num "$line1" busy)";   [ -n "$pkl_busy"  ] || pkl_busy=0
           pkl_total="$(get_num "$line1" total)"; [ -n "$pkl_total" ] || pkl_total=0
           pkl_pct="$(get_num "$line1" pct)";     [ -n "$pkl_pct"   ] || pkl_pct=0.0
-
           prj_free="$(get_num "$line2" free)";   [ -n "$prj_free"  ] || prj_free=0
           prj_busy="$(get_num "$line2" busy)";   [ -n "$prj_busy"  ] || prj_busy=0
           prj_total="$(get_num "$line2" total)"; [ -n "$prj_total" ] || prj_total=0
           prj_pct="$(get_num "$line2" pct)";     [ -n "$prj_pct"   ] || prj_pct=0.0
-
           {
             echo "pkl_free=$pkl_free"
             echo "pkl_busy=$pkl_busy"
@@ -73,10 +69,9 @@ jobs:
             echo "prj_pct=$prj_pct"
           } >> "$GITHUB_OUTPUT"
 
-      # ---------- EMAIL via msmtp (Gmail App Password required) ----------
+      # Email via msmtp (use Gmail **App Password**)
       - name: Install msmtp
         run: sudo apt-get update -y && sudo apt-get install -y msmtp
-
       - name: Send nightly email
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -84,13 +79,11 @@ jobs:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           TO_EMAIL:  ${{ secrets.TO_EMAIL }}
         run: |
-          # Write msmtp config
           cat > ~/.msmtprc <<EOF
           defaults
           auth           on
           tls            on
           tls_trust_file /etc/ssl/certs/ca-certificates.crt
-
           account default
           host $SMTP_HOST
           port 587
@@ -99,8 +92,6 @@ jobs:
           password $SMTP_PASS
           EOF
           chmod 600 ~/.msmtprc
-
-          # Build the message and feed it directly to msmtp
           {
             echo "To: $TO_EMAIL"
             echo "From: $SMTP_USER"
@@ -111,7 +102,7 @@ jobs:
             echo "ProjectPadel  free=${{ steps.nums.outputs.prj_free }}  busy=${{ steps.nums.outputs.prj_busy }}  total=${{ steps.nums.outputs.prj_total }}  pct=${{ steps.nums.outputs.prj_pct }}"
           } | msmtp -a default -t
 
-      # ---------- CSV ARCHIVE ----------
+      # CSV archive
       - name: Append to CSV log
         run: |
           mkdir -p data
@@ -126,7 +117,6 @@ jobs:
             "${{ steps.nums.outputs.prj_free }}" \
             "${{ steps.nums.outputs.prj_busy }}" \
             "${{ steps.nums.outputs.prj_pct }}" >> "$FILE"
-
       - name: Commit updated CSV
         run: |
           git config --global user.name  "court-bot"
